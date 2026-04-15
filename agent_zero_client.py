@@ -1,4 +1,8 @@
-"""HTTP client for communicating with Agent Zero API."""
+"""HTTP client for communicating with Agent Zero API.
+
+Supports session-based authentication (login with username/password)
+and API key authentication (X-API-KEY header).
+"""
 import asyncio
 import base64
 import json
@@ -15,35 +19,151 @@ logger = logging.getLogger(__name__)
 class AgentZeroClient:
     """Async HTTP client for the Agent Zero REST API."""
 
-    def __init__(self, base_url: str, api_key: str = "", timeout: float = 120.0):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "",
+        username: str = "",
+        password: str = "",
+        timeout: float = 120.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.username = username
+        self.password = password
         self.timeout = timeout
         self.context_id: str = ""
         self._client: Optional[httpx.AsyncClient] = None
+        self._authenticated = False
 
     def _get_headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
-            headers["X-API-Key"] = self.api_key
+            headers["X-API-KEY"] = self.api_key
         return headers
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # Use a cookie jar to maintain session cookies across requests
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
-                follow_redirects=True,
+                follow_redirects=False,  # Don't follow redirects - detect auth failures
             )
+            self._authenticated = False
         return self._client
 
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+            self._authenticated = False
+
+    async def login(self) -> bool:
+        """Authenticate with Agent Zero using username/password.
+
+        POSTs form data to /login endpoint. On success, the session
+        cookie is stored in the httpx client's cookie jar.
+
+        Returns True if login succeeded or no login is required.
+        """
+        if not self.username:
+            logger.info("No username configured, skipping login")
+            return True
+
+        try:
+            client = await self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/login",
+                data={"username": self.username, "password": self.password},
+                follow_redirects=False,
+            )
+
+            # Successful login returns 302 redirect to / (index)
+            if resp.status_code in (302, 303):
+                location = resp.headers.get("location", "")
+                if "/login" not in location:
+                    self._authenticated = True
+                    logger.info("Login successful")
+                    return True
+                else:
+                    logger.error("Login failed: redirected back to login (bad credentials)")
+                    return False
+            elif resp.status_code == 200:
+                # Some setups return 200 on success
+                text = resp.text
+                if "Invalid Credentials" in text or "login" in text.lower()[:200]:
+                    logger.error("Login failed: invalid credentials")
+                    return False
+                self._authenticated = True
+                logger.info("Login successful (200)")
+                return True
+            else:
+                logger.error(f"Login failed: HTTP {resp.status_code}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Login request failed: {e}")
+            return False
+
+    async def _ensure_authenticated(self) -> bool:
+        """Ensure we have an active session. Login if needed."""
+        if self._authenticated:
+            return True
+        if self.username:
+            return await self.login()
+        return True  # No auth configured
+
+    async def _api_request(
+        self,
+        method: str,
+        path: str,
+        json_data: dict = None,
+        headers: dict = None,
+        files: dict = None,
+        timeout: float = None,
+    ) -> httpx.Response:
+        """Make an authenticated API request.
+
+        Handles 302 redirects to /login by re-authenticating and retrying.
+        """
+        client = await self._get_client()
+        await self._ensure_authenticated()
+
+        url = f"{self.base_url}{path}"
+        req_headers = headers or self._get_headers()
+        req_timeout = timeout or self.timeout
+
+        for attempt in range(2):  # Try twice: once normally, once after re-login
+            if files:
+                # Multipart upload - don't set Content-Type
+                h = {k: v for k, v in req_headers.items() if k != "Content-Type"}
+                resp = await client.post(url, headers=h, files=files, timeout=req_timeout)
+            elif method.upper() == "GET":
+                resp = await client.get(url, headers=req_headers, timeout=req_timeout)
+            else:
+                resp = await client.post(url, headers=req_headers, json=json_data, timeout=req_timeout)
+
+            # Check for auth redirect (302 to /login)
+            if resp.status_code in (302, 303):
+                location = resp.headers.get("location", "")
+                if "/login" in location:
+                    if attempt == 0 and self.username:
+                        logger.warning("Session expired, re-authenticating...")
+                        self._authenticated = False
+                        if await self.login():
+                            continue  # Retry the request
+                    raise AuthenticationError(
+                        "Authentication required. Please check your login credentials."
+                    )
+
+            return resp
+
+        raise AuthenticationError("Failed to authenticate after retry")
 
     async def health_check(self) -> bool:
         """Check if Agent Zero is reachable."""
         try:
             client = await self._get_client()
+            # Health endpoint typically doesn't require auth
             resp = await client.get(
                 f"{self.base_url}/api/health",
                 headers=self._get_headers(),
@@ -54,21 +174,38 @@ class AgentZeroClient:
             logger.warning(f"Health check failed: {e}")
             return False
 
+    async def check_auth_required(self) -> bool:
+        """Check if the Agent Zero instance requires authentication.
+
+        Returns True if login is required, False if open access.
+        """
+        try:
+            client = await self._get_client()
+            resp = await client.get(
+                f"{self.base_url}/",
+                follow_redirects=False,
+                timeout=5.0,
+            )
+            # If we get redirected to /login, auth is required
+            if resp.status_code in (302, 303):
+                location = resp.headers.get("location", "")
+                return "/login" in location
+            return False
+        except Exception:
+            return False
+
     async def create_context(self) -> str:
         """Create a new chat context and return its ID."""
         try:
-            client = await self._get_client()
-            resp = await client.post(
-                f"{self.base_url}/api/chat_create",
-                headers=self._get_headers(),
-                json={},
-            )
+            resp = await self._api_request("POST", "/api/chat_create", json_data={})
             resp.raise_for_status()
             data = resp.json()
-            ctx_id = data.get("context", data.get("id", ""))
+            ctx_id = data.get("ctxid", data.get("context", data.get("id", "")))
             self.context_id = ctx_id
             logger.info(f"Created context: {ctx_id}")
             return ctx_id
+        except AuthenticationError:
+            raise
         except Exception as e:
             logger.error(f"Failed to create context: {e}")
             return ""
@@ -91,43 +228,36 @@ class AgentZeroClient:
             ctx = await self.create_context()
             self.context_id = ctx
 
-        client = await self._get_client()
-
         # Build request - use multipart if screenshot attached
         if screenshot_path and Path(screenshot_path).exists():
-            response = await self._send_with_attachment(
-                client, text, screenshot_path, ctx
-            )
+            response = await self._send_with_attachment(text, screenshot_path, ctx)
         else:
-            response = await self._send_json(client, text, ctx)
+            response = await self._send_json(text, ctx)
 
         return response
 
-    async def _send_json(self, client: httpx.AsyncClient, text: str, ctx: str) -> str:
+    async def _send_json(self, text: str, ctx: str) -> str:
         """Send a plain text message via JSON."""
         try:
-            # Send async message first
-            resp = await client.post(
-                f"{self.base_url}/api/message_async",
-                headers=self._get_headers(),
-                json={"text": text, "context": ctx},
+            resp = await self._api_request(
+                "POST", "/api/message_async",
+                json_data={"text": text, "context": ctx},
             )
             resp.raise_for_status()
             data = resp.json()
-            # Update context id if returned
             if "context" in data:
                 self.context_id = data["context"]
                 ctx = self.context_id
 
-            # Poll for response
-            return await self._poll_response(client, ctx)
+            return await self._poll_response(ctx)
+        except AuthenticationError:
+            raise
         except Exception as e:
             logger.error(f"Send message failed: {e}")
             raise
 
     async def _send_with_attachment(
         self,
-        client: httpx.AsyncClient,
         text: str,
         screenshot_path: str,
         ctx: str,
@@ -142,14 +272,11 @@ class AgentZeroClient:
                 "context": (None, ctx),
                 "attachments": ("screenshot.png", img_data, "image/png"),
             }
-            headers = {}
-            if self.api_key:
-                headers["X-API-Key"] = self.api_key
+            headers = self._get_headers()
 
-            resp = await client.post(
-                f"{self.base_url}/api/message_async",
-                headers=headers,
-                files=files,
+            resp = await self._api_request(
+                "POST", "/api/message_async",
+                files=files, headers=headers,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -157,14 +284,15 @@ class AgentZeroClient:
                 self.context_id = data["context"]
                 ctx = self.context_id
 
-            return await self._poll_response(client, ctx)
+            return await self._poll_response(ctx)
+        except AuthenticationError:
+            raise
         except Exception as e:
             logger.error(f"Send with attachment failed: {e}")
             raise
 
     async def _poll_response(
         self,
-        client: httpx.AsyncClient,
         ctx: str,
         max_wait: float = 120.0,
         poll_interval: float = 0.8,
@@ -177,10 +305,9 @@ class AgentZeroClient:
         while time.monotonic() - start < max_wait:
             await asyncio.sleep(poll_interval)
             try:
-                resp = await client.post(
-                    f"{self.base_url}/api/poll",
-                    headers=self._get_headers(),
-                    json={"context": ctx, "log_from": log_from},
+                resp = await self._api_request(
+                    "POST", "/api/poll",
+                    json_data={"context": ctx, "log_from": log_from},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -212,6 +339,8 @@ class AgentZeroClient:
                         if content and not is_running:
                             return content
 
+            except AuthenticationError:
+                raise
             except Exception as e:
                 logger.warning(f"Poll error: {e}")
                 await asyncio.sleep(poll_interval)
@@ -221,18 +350,14 @@ class AgentZeroClient:
     async def transcribe_audio(self, audio_path: str) -> str:
         """Transcribe audio file using Agent Zero's transcribe endpoint."""
         try:
-            client = await self._get_client()
             with open(audio_path, "rb") as f:
                 audio_data = f.read()
 
-            headers = {}
-            if self.api_key:
-                headers["X-API-Key"] = self.api_key
-
-            resp = await client.post(
-                f"{self.base_url}/api/transcribe",
-                headers=headers,
+            headers = self._get_headers()
+            resp = await self._api_request(
+                "POST", "/api/transcribe",
                 files={"audio": ("audio.wav", audio_data, "audio/wav")},
+                headers=headers,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -244,3 +369,8 @@ class AgentZeroClient:
     def reset_context(self):
         """Clear the stored context ID to start a fresh conversation."""
         self.context_id = ""
+
+
+class AuthenticationError(Exception):
+    """Raised when API requests fail due to authentication issues."""
+    pass

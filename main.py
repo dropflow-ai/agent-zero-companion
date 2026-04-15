@@ -125,7 +125,11 @@ class AgentZeroCompanion:
         from agent_zero_client import AgentZeroClient
         url = self._config.get("agent_zero_url", "http://localhost:80")
         api_key = self._config.get("api_key", "")
-        self._client = AgentZeroClient(url, api_key)
+        username = self._config.get("username", "")
+        password = self._config.get("password", "")
+        self._client = AgentZeroClient(
+            url, api_key=api_key, username=username, password=password
+        )
 
         # Restore context if keep_context is enabled
         if self._config.get("keep_context", True):

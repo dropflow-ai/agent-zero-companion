@@ -175,8 +175,18 @@ class SettingsDialog:
 
         self._api_key_field = QLineEdit(self.config.get("api_key", ""))
         self._api_key_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_field.setPlaceholderText("Optional: API-Schlüssel")
+        self._api_key_field.setPlaceholderText("Optional: API-Schlüssel (MCP Server Token)")
         conn_layout.addRow("API-Schlüssel:", self._api_key_field)
+
+        # Login credentials (for session-based auth)
+        self._username_field = QLineEdit(self.config.get("username", ""))
+        self._username_field.setPlaceholderText("Agent Zero Login-Benutzername")
+        conn_layout.addRow("Benutzername:", self._username_field)
+
+        self._password_field = QLineEdit(self.config.get("password", ""))
+        self._password_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password_field.setPlaceholderText("Agent Zero Login-Passwort")
+        conn_layout.addRow("Passwort:", self._password_field)
 
         test_btn = QPushButton("Verbindung testen")
         test_btn.setObjectName("test_btn")
@@ -379,12 +389,19 @@ class SettingsDialog:
 
         url = self._url_field.text().strip()
         api_key = self._api_key_field.text().strip()
+        username = self._username_field.text().strip()
+        password = self._password_field.text().strip()
 
         def run_test():
             from agent_zero_client import AgentZeroClient
-            client = AgentZeroClient(url, api_key)
+            client = AgentZeroClient(url, api_key=api_key, username=username, password=password)
 
             async def check():
+                # Try login first if credentials provided
+                if username:
+                    logged_in = await client.login()
+                    if not logged_in:
+                        return False
                 return await client.health_check()
 
             loop = asyncio.new_event_loop()
@@ -421,6 +438,8 @@ class SettingsDialog:
         updates = {
             "agent_zero_url": self._url_field.text().strip(),
             "api_key": self._api_key_field.text().strip(),
+            "username": self._username_field.text().strip(),
+            "password": self._password_field.text().strip(),
             "hotkey": hotkey,
             "keep_context": self._keep_context.isChecked(),
             "auto_screenshot": self._auto_screenshot.isChecked(),
