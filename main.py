@@ -157,78 +157,16 @@ class AgentZeroCompanion:
 
     def _init_hotkey(self):
         """Register the global hotkey."""
-        # On macOS, pynput requires Accessibility permissions.
-        # Without them, it causes SIGTRAP which kills the process.
-        # Test in a subprocess first to avoid crashing the main app.
-        if platform.system() == "Darwin" and not self._test_pynput_macos():
-            logger.warning(
-                "\n" + "=" * 60 + "\n"
-                "⚠️  HOTKEY DEAKTIVIERT – Accessibility-Berechtigung fehlt!\n"
-                "\n"
-                "Bitte erteile Terminal die Berechtigung:\n"
-                "  1. Öffne: Systemeinstellungen → Datenschutz & Sicherheit\n"
-                "     → Bedienungshilfen\n"
-                "  2. Klicke auf '+' und füge 'Terminal' hinzu\n"
-                "  3. Aktiviere den Schalter neben 'Terminal'\n"
-                "  4. Starte die App neu\n"
-                "\n"
-                "Die App läuft ohne Hotkey weiter – nutze das Tray-Icon\n"
-                "(oben rechts in der Menüleiste) um das Overlay zu öffnen.\n"
-                + "=" * 60
-            )
-            # Try to open System Settings
-            try:
-                subprocess.Popen([
-                    "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-                ])
-            except Exception:
-                pass
-            return
-
         from hotkey_manager import HotkeyManager
         self._hotkey_manager = HotkeyManager()
         hotkey = self._config.get("hotkey", "<ctrl>+<space>")
         self._hotkey_manager.register(hotkey, self._on_hotkey)
         if not self._hotkey_manager.start():
-            logger.warning("Global hotkey registration failed")
-
-    def _test_pynput_macos(self) -> bool:
-        """Test if pynput can access keyboard on macOS.
-        Runs a quick subprocess test. Returns True if permissions are OK."""
-        try:
-            test_script = (
-                "import sys\n"
-                "try:\n"
-                "    from pynput import keyboard\n"
-                "    listener = keyboard.Listener(on_press=lambda k: None)\n"
-                "    listener.start()\n"
-                "    import time; time.sleep(0.5)\n"
-                "    listener.stop()\n"
-                "    print('OK')\n"
-                "    sys.exit(0)\n"
-                "except Exception as e:\n"
-                "    print(f'ERROR: {e}')\n"
-                "    sys.exit(1)\n"
+            logger.warning(
+                "Global hotkey registration failed. "
+                "On macOS, grant Accessibility permissions: "
+                "System Settings → Privacy & Security → Accessibility → enable Terminal"
             )
-            result = subprocess.run(
-                [sys.executable, "-c", test_script],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and "OK" in result.stdout:
-                logger.info("macOS Accessibility permissions OK")
-                return True
-            else:
-                logger.warning(f"pynput test failed: exit={result.returncode} "
-                             f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
-                return False
-        except subprocess.TimeoutExpired:
-            logger.warning("pynput test timed out – permissions likely missing")
-            return False
-        except Exception as e:
-            logger.warning(f"pynput test error: {e}")
-            return False
 
     def _on_hotkey(self):
         """Called when the global hotkey is pressed."""

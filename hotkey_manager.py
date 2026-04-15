@@ -1,269 +1,272 @@
-"""Global hotkey manager using pynput for cross-platform support."""
+"""Global hotkey manager.
+
+macOS: Uses PyObjC NSEvent global monitor (runs on Qt/AppKit main thread).
+Windows/Linux: Uses pynput GlobalHotKeys (runs in background thread).
+
+pynput is NOT used on macOS because it runs Cocoa listeners in background
+threads, causing SIGTRAP crashes when hotkey callbacks touch AppKit.
+"""
 import logging
 import platform
-import sys
 import threading
-from typing import Callable, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 
-def check_macos_accessibility() -> bool:
-    """Check if Accessibility permissions are likely granted on macOS.
-    Returns True if not on macOS or if permissions seem OK."""
-    if platform.system() != "Darwin":
-        return True
-    try:
-        # Try importing and creating a minimal listener to test permissions
-        import subprocess
-        # Use tccutil or check via AppleScript - but simplest is just to try
-        return True  # We'll catch the actual error during start()
-    except Exception:
-        return False
-
-
-def request_macos_accessibility():
-    """Show a dialog requesting macOS Accessibility permissions."""
-    if platform.system() != "Darwin":
-        return
-    try:
-        import subprocess
-        script = '''
-        tell application "System Preferences"
-            activate
-            set current pane to pane "com.apple.preference.security"
-            reveal anchor "Privacy_Accessibility" of pane "com.apple.preference.security"
-        end tell
-        '''
-        # Try to open System Settings directly
-        subprocess.Popen([
-            "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ])
-    except Exception as e:
-        logger.debug(f"Could not open System Preferences: {e}")
-
-
 class HotkeyManager:
-    """
-    Manages global hotkeys using pynput.
-    Supports configurable key combinations like <ctrl>+<space>, <alt>+<shift>+a, etc.
+    """Cross-platform global hotkey manager.
 
     Key format examples:
-        '<ctrl>+<space>'       → Ctrl + Space
-        '<alt>+<shift>+a'      → Alt + Shift + A
-        '<ctrl>+<alt>+z'       → Ctrl + Alt + Z
-        '<f12>'                → F12 alone
+        '<ctrl>+<space>'       -> Ctrl + Space
+        '<alt>+<shift>+a'      -> Alt + Shift + A
+        '<cmd>+<space>'        -> Cmd + Space (macOS)
     """
 
     def __init__(self):
-        self._hotkeys: dict[str, Callable] = {}
-        self._listener = None
+        self._hotkeys: Dict[str, Callable] = {}
+        self._impl = None
         self._running = False
-        self._pressed_keys: Set = set()
-        self._lock = threading.Lock()
-        self._is_macos = platform.system() == "Darwin"
 
     def register(self, hotkey: str, callback: Callable) -> bool:
-        """
-        Register a hotkey combination with a callback.
-
-        Args:
-            hotkey: Key combination string (e.g., '<ctrl>+<space>')
-            callback: Function to call when hotkey is pressed
-
-        Returns:
-            True if registered successfully
-        """
-        try:
-            from pynput import keyboard
-
-            # Validate the hotkey by parsing it
-            parsed = self._parse_hotkey(hotkey)
-            if not parsed:
-                logger.error(f"Invalid hotkey format: {hotkey}")
-                return False
-
-            with self._lock:
-                self._hotkeys[hotkey] = callback
-
-            logger.info(f"Registered hotkey: {hotkey}")
-            return True
-        except ImportError:
-            logger.error("pynput not installed. Run: pip install pynput")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to register hotkey {hotkey}: {e}")
-            return False
+        """Register a hotkey combination with a callback."""
+        self._hotkeys[hotkey] = callback
+        logger.info(f"Registered hotkey: {hotkey}")
+        return True
 
     def unregister(self, hotkey: str) -> None:
         """Remove a registered hotkey."""
-        with self._lock:
-            self._hotkeys.pop(hotkey, None)
+        self._hotkeys.pop(hotkey, None)
         logger.info(f"Unregistered hotkey: {hotkey}")
 
     def start(self) -> bool:
-        """Start listening for hotkeys. Returns True if successful."""
-        if self._is_macos:
-            return self._start_macos()
-        return self._start_default()
-
-    def _start_macos(self) -> bool:
-        """Start hotkey listener on macOS with permission handling."""
-        try:
-            from pynput import keyboard
-
-            if self._running:
-                return True
-
-            # Build pynput hotkey map
-            hotkey_map = {}
-            with self._lock:
-                for combo, cb in self._hotkeys.items():
-                    hotkey_map[combo] = cb
-
-            if not hotkey_map:
-                logger.warning("No hotkeys registered")
-                return False
-
-            # On macOS, pynput needs Accessibility permissions.
-            # If not granted, GlobalHotKeys will cause SIGTRAP.
-            # We start the listener in a separate process to test.
-            logger.info("macOS detected – testing Accessibility permissions...")
-
-            # Try starting in a thread with a timeout
-            success = [False]
-            error = [None]
-
-            def try_start():
-                try:
-                    listener = keyboard.GlobalHotKeys(hotkey_map)
-                    listener.start()
-                    # If we get here, permissions are OK
-                    self._listener = listener
-                    self._running = True
-                    success[0] = True
-                    logger.info(f"Hotkey listener started with {len(hotkey_map)} hotkeys")
-                except Exception as e:
-                    error[0] = e
-
-            thread = threading.Thread(target=try_start, daemon=True)
-            thread.start()
-            thread.join(timeout=3.0)
-
-            if success[0]:
-                return True
-
-            # If we get here, either timeout or error
-            logger.warning(
-                "⚠️  macOS Accessibility-Berechtigung fehlt!\n"
-                "    Bitte erteile Terminal/Python die Berechtigung:\n"
-                "    Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen\n"
-                "    Füge 'Terminal' (oder 'iTerm') zur Liste hinzu und aktiviere es."
-            )
-            request_macos_accessibility()
+        """Start listening for hotkeys."""
+        if not self._hotkeys:
+            logger.warning("No hotkeys registered")
             return False
 
-        except ImportError:
-            logger.error("pynput not installed. Run: pip install pynput")
+        if platform.system() == "Darwin":
+            self._impl = _MacOSHotkeyListener(self._hotkeys)
+        else:
+            self._impl = _PynputHotkeyListener(self._hotkeys)
+
+        return self._impl.start()
+
+    def stop(self):
+        """Stop listening for hotkeys."""
+        if self._impl:
+            self._impl.stop()
+            self._impl = None
+
+
+# ---------------------------------------------------------------------------
+# macOS: NSEvent global monitor via PyObjC
+# Runs on the main thread's run loop (shared with Qt) – no SIGTRAP.
+# ---------------------------------------------------------------------------
+
+def _parse_hotkey_to_modifiers_and_key(hotkey_str: str):
+    """Parse '<ctrl>+<space>' style string into (modifier_flags, key_code/char).
+
+    Returns (modifier_mask, key_string) for NSEvent matching.
+    """
+    parts = [p.strip().lower() for p in hotkey_str.split("+")]
+
+    modifiers = 0
+    key_part = None
+
+    # macOS modifier flags (from NSEvent)
+    # We'll import Cocoa constants inside the function to avoid import errors on non-mac
+    modifier_map = {
+        "<ctrl>": "control",
+        "<control>": "control",
+        "<shift>": "shift",
+        "<alt>": "option",
+        "<option>": "option",
+        "<cmd>": "command",
+        "<command>": "command",
+        "<super>": "command",
+    }
+
+    active_mods = set()
+
+    for part in parts:
+        if part in modifier_map:
+            active_mods.add(modifier_map[part])
+        else:
+            # This is the key
+            key_part = part.strip("<>")
+
+    return active_mods, key_part
+
+
+class _MacOSHotkeyListener:
+    """Global hotkey listener using PyObjC NSEvent monitor."""
+
+    def __init__(self, hotkeys: Dict[str, Callable]):
+        self._hotkeys = hotkeys
+        self._monitor = None
+        self._parsed_hotkeys = []  # list of (modifier_set, key, callback)
+
+    def start(self) -> bool:
+        try:
+            import Cocoa
+            import Quartz
+
+            # Parse all hotkeys
+            for combo, callback in self._hotkeys.items():
+                mods, key = _parse_hotkey_to_modifiers_and_key(combo)
+                if key:
+                    self._parsed_hotkeys.append((mods, key, callback))
+                    logger.debug(f"Parsed macOS hotkey: mods={mods} key={key}")
+
+            if not self._parsed_hotkeys:
+                logger.error("No valid hotkeys parsed")
+                return False
+
+            # Map modifier names to NSEvent modifier flags
+            self._mod_flag_map = {
+                "control": Cocoa.NSEventModifierFlagControl,
+                "shift": Cocoa.NSEventModifierFlagShift,
+                "option": Cocoa.NSEventModifierFlagOption,
+                "command": Cocoa.NSEventModifierFlagCommand,
+            }
+
+            # Special key name to keyCode mapping
+            self._special_keys = {
+                "space": 49,
+                "return": 36,
+                "enter": 36,
+                "tab": 48,
+                "escape": 53,
+                "esc": 53,
+                "delete": 51,
+                "backspace": 51,
+                "f1": 122, "f2": 120, "f3": 99, "f4": 118,
+                "f5": 96, "f6": 97, "f7": 98, "f8": 100,
+                "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+                "up": 126, "down": 125, "left": 123, "right": 124,
+            }
+
+            # Register global monitor for keyDown events
+            mask = Cocoa.NSEventMaskKeyDown
+
+            def handler(event):
+                self._handle_event(event)
+                return event
+
+            self._monitor = Cocoa.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                mask, handler
+            )
+
+            if self._monitor is None:
+                logger.error(
+                    "Failed to register global key monitor. "
+                    "Grant Accessibility permissions: "
+                    "System Settings → Privacy & Security → Accessibility → enable Terminal"
+                )
+                return False
+
+            logger.info(f"Hotkey listener started (macOS NSEvent) with {len(self._parsed_hotkeys)} hotkeys")
+            return True
+
+        except ImportError as e:
+            logger.error(f"PyObjC not available: {e}. Install with: pip install pyobjc-framework-Cocoa pyobjc-framework-Quartz")
             return False
         except Exception as e:
-            logger.error(f"Failed to start hotkey listener: {e}")
+            logger.error(f"Failed to start macOS hotkey listener: {e}")
             return False
 
-    def _start_default(self) -> bool:
-        """Start hotkey listener on Windows/Linux."""
+    def _handle_event(self, event):
+        """Check if the event matches any registered hotkey."""
+        try:
+            import Cocoa
+
+            event_flags = event.modifierFlags()
+            event_keycode = event.keyCode()
+
+            # Try to get character
+            try:
+                event_chars = event.charactersIgnoringModifiers()
+                event_char = event_chars.lower() if event_chars else None
+            except Exception:
+                event_char = None
+
+            for mods, key, callback in self._parsed_hotkeys:
+                # Check modifiers
+                mods_match = True
+                for mod_name in mods:
+                    flag = self._mod_flag_map.get(mod_name, 0)
+                    if not (event_flags & flag):
+                        mods_match = False
+                        break
+
+                if not mods_match:
+                    continue
+
+                # Check key
+                key_match = False
+
+                # Check special keys by keyCode
+                if key in self._special_keys:
+                    if event_keycode == self._special_keys[key]:
+                        key_match = True
+                # Check character keys
+                elif event_char and event_char == key:
+                    key_match = True
+
+                if key_match:
+                    logger.debug(f"Hotkey matched: mods={mods} key={key}")
+                    try:
+                        callback()
+                    except Exception as e:
+                        logger.error(f"Hotkey callback error: {e}")
+
+        except Exception as e:
+            logger.error(f"Error handling key event: {e}")
+
+    def stop(self):
+        if self._monitor:
+            try:
+                import Cocoa
+                Cocoa.NSEvent.removeMonitor_(self._monitor)
+            except Exception as e:
+                logger.debug(f"Error removing monitor: {e}")
+            self._monitor = None
+        logger.info("macOS hotkey listener stopped")
+
+
+# ---------------------------------------------------------------------------
+# Windows / Linux: pynput GlobalHotKeys (background thread)
+# ---------------------------------------------------------------------------
+
+class _PynputHotkeyListener:
+    """Global hotkey listener using pynput. Works on Windows and Linux."""
+
+    def __init__(self, hotkeys: Dict[str, Callable]):
+        self._hotkeys = hotkeys
+        self._listener = None
+
+    def start(self) -> bool:
         try:
             from pynput import keyboard
 
-            if self._running:
-                return True
-
-            hotkey_map = {}
-            with self._lock:
-                for combo, cb in self._hotkeys.items():
-                    hotkey_map[combo] = cb
-
-            if not hotkey_map:
-                logger.warning("No hotkeys registered")
-                return False
-
-            self._listener = keyboard.GlobalHotKeys(hotkey_map)
+            self._listener = keyboard.GlobalHotKeys(self._hotkeys)
             self._listener.start()
-            self._running = True
-            logger.info(f"Hotkey listener started with {len(hotkey_map)} hotkeys")
+            logger.info(f"Hotkey listener started (pynput) with {len(self._hotkeys)} hotkeys")
             return True
 
         except ImportError:
             logger.error("pynput not installed. Run: pip install pynput")
             return False
         except Exception as e:
-            logger.error(f"Failed to start hotkey listener: {e}")
+            logger.error(f"Failed to start pynput hotkey listener: {e}")
             return False
 
-    def stop(self) -> None:
-        """Stop the hotkey listener."""
+    def stop(self):
         if self._listener:
             try:
                 self._listener.stop()
             except Exception:
                 pass
             self._listener = None
-        self._running = False
-        logger.info("Hotkey listener stopped")
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    def _parse_hotkey(self, hotkey: str) -> list:
-        """Parse a hotkey string into key components."""
-        parts = hotkey.split("+")
-        return [p.strip() for p in parts if p.strip()]
-
-
-def format_hotkey_display(hotkey: str) -> str:
-    """Convert internal hotkey format to display format.
-    '<ctrl>+<space>' → 'Ctrl + Space'
-    """
-    replacements = {
-        "<ctrl>": "Ctrl",
-        "<alt>": "Alt",
-        "<shift>": "Shift",
-        "<cmd>": "Cmd",
-        "<space>": "Space",
-        "<enter>": "Enter",
-        "<tab>": "Tab",
-        "<f1>": "F1", "<f2>": "F2", "<f3>": "F3", "<f4>": "F4",
-        "<f5>": "F5", "<f6>": "F6", "<f7>": "F7", "<f8>": "F8",
-        "<f9>": "F9", "<f10>": "F10", "<f11>": "F11", "<f12>": "F12",
-    }
-    parts = hotkey.split("+")
-    display_parts = []
-    for part in parts:
-        part = part.strip()
-        display_parts.append(replacements.get(part, part.upper()))
-    return " + ".join(display_parts)
-
-
-def parse_hotkey_from_display(display: str) -> str:
-    """Convert display format back to internal format.
-    'Ctrl + Space' → '<ctrl>+<space>'
-    """
-    replacements = {
-        "ctrl": "<ctrl>",
-        "alt": "<alt>",
-        "shift": "<shift>",
-        "cmd": "<cmd>",
-        "space": "<space>",
-        "enter": "<enter>",
-        "tab": "<tab>",
-        "f1": "<f1>", "f2": "<f2>", "f3": "<f3>", "f4": "<f4>",
-        "f5": "<f5>", "f6": "<f6>", "f7": "<f7>", "f8": "<f8>",
-        "f9": "<f9>", "f10": "<f10>", "f11": "<f11>", "f12": "<f12>",
-    }
-    parts = display.split("+")
-    internal_parts = []
-    for part in parts:
-        part = part.strip().lower()
-        internal_parts.append(replacements.get(part, part))
-    return "+".join(internal_parts)
+        logger.info("pynput hotkey listener stopped")

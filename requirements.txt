@@ -4,12 +4,16 @@
 # UI Framework
 PyQt6>=6.6.0
 
-# System Tray
+# System Tray (Windows/Linux only, macOS uses Qt)
 pystray>=0.19.5
 Pillow>=10.0.0
 
-# Global Hotkeys (cross-platform)
+# Global Hotkeys - Windows/Linux
 pynput>=1.7.6
+
+# Global Hotkeys - macOS (uses NSEvent via PyObjC)
+pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'
+pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'
 
 # Screen Capture
 mss>=9.0.1
