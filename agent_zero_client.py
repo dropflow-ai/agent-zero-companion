@@ -297,21 +297,29 @@ class AgentZeroClient:
         screenshot_path: str,
         ctx: str,
     ) -> str:
-        """Send message with screenshot attachment via multipart."""
+        """Send message with screenshot attachment via base64 JSON."""
         try:
             with open(screenshot_path, "rb") as f:
                 img_data = f.read()
 
-            files = {
-                "text": (None, text),
-                "context": (None, ctx),
-                "attachments": ("screenshot.png", img_data, "image/png"),
+            # Encode as base64 for the A0 API
+            img_b64 = base64.b64encode(img_data).decode("utf-8")
+            filename = Path(screenshot_path).name
+
+            payload = {
+                "text": text,
+                "context": ctx,
+                "attachments": [
+                    {
+                        "filename": filename,
+                        "base64": img_b64,
+                    }
+                ],
             }
-            headers = self._get_headers()
 
             resp = await self._api_request(
                 "POST", "/api/message_async",
-                files=files, headers=headers,
+                json_data=payload,
             )
             resp.raise_for_status()
             data = resp.json()

@@ -184,13 +184,19 @@ class AgentZeroCompanion:
             if self._overlay.is_visible:
                 self._overlay.hide()
             else:
-                # Auto-screenshot if configured
-                if self._config.get("auto_screenshot", False):
+                # Auto-screenshot: always capture when overlay opens
+                if self._config.get("auto_screenshot", True):
                     from screen_capture import capture_screen
                     screenshot_path = capture_screen()
                     if screenshot_path:
                         self._overlay._screenshot_path = screenshot_path
                         self._overlay._screenshot_enabled = True
+                        if self._overlay._screenshot_btn:
+                            self._overlay._screenshot_btn.setChecked(True)
+                            self._overlay._screenshot_btn.setProperty("active", True)
+                            self._overlay._screenshot_btn.style().unpolish(self._overlay._screenshot_btn)
+                            self._overlay._screenshot_btn.style().polish(self._overlay._screenshot_btn)
+                        self._overlay.set_status("📷 Screenshot angehängt", "#7b8cde")
                 self._overlay.show_near_cursor()
 
     def _show_settings(self):

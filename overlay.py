@@ -430,12 +430,18 @@ class OverlayWindow:
         self.set_status("Wird gesendet...", "#7b8cde")
         self._response_area.setPlainText("")
 
-        # Take screenshot if enabled
+        # Use pre-captured screenshot (from auto_screenshot) or capture now
         screenshot_path = None
         if self._screenshot_enabled:
-            from screen_capture import capture_screen
-            screenshot_path = capture_screen()
-            self.set_status("Screenshot aufgenommen ✓", "#7b8cde")
+            if self._screenshot_path and os.path.exists(self._screenshot_path):
+                # Use already captured screenshot (from auto_screenshot on overlay open)
+                screenshot_path = self._screenshot_path
+                self._screenshot_path = None
+            else:
+                # Capture fresh screenshot
+                from screen_capture import capture_screen
+                screenshot_path = capture_screen()
+            self.set_status("Screenshot angehängt ✓", "#7b8cde")
 
         # Call the send callback
         if self.on_send:
