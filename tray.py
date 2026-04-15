@@ -1,5 +1,11 @@
-"""System tray icon for Agent Zero Companion using pystray."""
+"""System tray icon for Agent Zero Companion.
+
+Uses PyQt6 QSystemTrayIcon on macOS (pystray crashes because it runs
+NSApplication.run() off the main thread, conflicting with Qt's event loop).
+Uses pystray on Windows/Linux where it works reliably.
+"""
 import logging
+import platform
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -12,7 +18,7 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 class SystemTray:
     """
     System tray icon that provides quick access to Agent Zero Companion.
-    Runs in its own thread to avoid blocking the Qt event loop.
+    Auto-selects the best backend for the current platform.
     """
 
     def __init__(
@@ -26,68 +32,215 @@ class SystemTray:
         self.on_settings = on_settings
         self.on_quit = on_quit
         self.on_new_chat = on_new_chat
+        self._impl = None
+
+    def start(self) -> bool:
+        """Start the system tray icon. Returns True if successful."""
+        if platform.system() == "Darwin":
+            self._impl = _QtTray(
+                on_show=self.on_show,
+                on_settings=self.on_settings,
+                on_quit=self.on_quit,
+                on_new_chat=self.on_new_chat,
+            )
+        else:
+            self._impl = _PystrayTray(
+                on_show=self.on_show,
+                on_settings=self.on_settings,
+                on_quit=self.on_quit,
+                on_new_chat=self.on_new_chat,
+            )
+        return self._impl.start()
+
+    def stop(self):
+        """Stop the system tray icon."""
+        if self._impl:
+            self._impl.stop()
+
+
+# ---------------------------------------------------------------------------
+# macOS: PyQt6 QSystemTrayIcon (runs on Qt main thread – no AppKit conflict)
+# ---------------------------------------------------------------------------
+
+class _QtTray:
+    """System tray using PyQt6 QSystemTrayIcon. Safe on macOS."""
+
+    def __init__(self, on_show=None, on_settings=None, on_quit=None, on_new_chat=None):
+        self.on_show = on_show
+        self.on_settings = on_settings
+        self.on_quit = on_quit
+        self.on_new_chat = on_new_chat
+        self._tray_icon = None
+        self._menu = None  # prevent garbage collection
+
+    def start(self) -> bool:
+        try:
+            from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+            from PyQt6.QtGui import QIcon, QAction
+            from PyQt6.QtCore import QCoreApplication
+
+            app = QCoreApplication.instance()
+            if not app:
+                logger.error("No QApplication instance – cannot create Qt tray")
+                return False
+
+            # Load icon
+            icon_path = ASSETS_DIR / "icon.png"
+            if icon_path.exists():
+                icon = QIcon(str(icon_path))
+            else:
+                icon = self._generate_qt_icon()
+
+            self._tray_icon = QSystemTrayIcon(icon)
+
+            # Build context menu
+            self._menu = QMenu()
+
+            action_show = QAction("Agent Zero öffnen", self._menu)
+            action_show.triggered.connect(lambda: self._safe_call(self.on_show))
+            self._menu.addAction(action_show)
+
+            action_new = QAction("Neues Gespräch", self._menu)
+            action_new.triggered.connect(lambda: self._safe_call(self.on_new_chat))
+            self._menu.addAction(action_new)
+
+            self._menu.addSeparator()
+
+            action_settings = QAction("Einstellungen", self._menu)
+            action_settings.triggered.connect(lambda: self._safe_call(self.on_settings))
+            self._menu.addAction(action_settings)
+
+            self._menu.addSeparator()
+
+            action_quit = QAction("Beenden", self._menu)
+            action_quit.triggered.connect(lambda: self._safe_call(self.on_quit))
+            self._menu.addAction(action_quit)
+
+            self._tray_icon.setContextMenu(self._menu)
+
+            # Click opens overlay
+            self._tray_icon.activated.connect(self._on_activated)
+
+            self._tray_icon.setToolTip("Agent Zero Companion")
+            self._tray_icon.show()
+
+            logger.info("System tray started (Qt backend)")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start Qt tray: {e}")
+            return False
+
+    def _on_activated(self, reason):
+        """Handle tray icon activation (click/double-click)."""
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._safe_call(self.on_show)
+
+    def _generate_qt_icon(self):
+        """Generate a simple fallback icon."""
+        from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush
+        from PyQt6.QtCore import Qt, QRect
+
+        size = 64
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(0, 0, 0, 0))
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw circle background
+        painter.setBrush(QBrush(QColor(26, 26, 46)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, size - 4, size - 4)
+
+        # Draw "A0" text
+        painter.setPen(QColor(123, 140, 222))
+        font = painter.font()
+        font.setPixelSize(24)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "A0")
+
+        painter.end()
+        return QIcon(pixmap)
+
+    def _safe_call(self, callback):
+        if callback:
+            try:
+                callback()
+            except Exception as e:
+                logger.error(f"Tray callback error: {e}")
+
+    def stop(self):
+        if self._tray_icon:
+            self._tray_icon.hide()
+            self._tray_icon = None
+        self._menu = None
+        logger.info("Qt tray stopped")
+
+
+# ---------------------------------------------------------------------------
+# Windows / Linux: pystray (runs in its own thread)
+# ---------------------------------------------------------------------------
+
+class _PystrayTray:
+    """System tray using pystray. Works on Windows and Linux."""
+
+    def __init__(self, on_show=None, on_settings=None, on_quit=None, on_new_chat=None):
+        self.on_show = on_show
+        self.on_settings = on_settings
+        self.on_quit = on_quit
+        self.on_new_chat = on_new_chat
         self._icon = None
         self._thread: Optional[threading.Thread] = None
 
     def _load_icon(self):
-        """Load the tray icon image."""
         from PIL import Image
-
         icon_path = ASSETS_DIR / "icon.png"
         if icon_path.exists():
             return Image.open(icon_path)
-
-        # Generate a simple fallback icon
         return self._generate_icon()
 
     def _generate_icon(self):
-        """Generate a simple icon programmatically if no icon file exists."""
         from PIL import Image, ImageDraw
-
         size = 64
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-
-        # Draw a circle background
         draw.ellipse([2, 2, size - 2, size - 2], fill=(26, 26, 46, 255))
-
-        # Draw a lightning bolt (⚡)
         draw.polygon(
             [(32, 8), (20, 34), (30, 34), (22, 56), (44, 28), (34, 28), (42, 8)],
             fill=(123, 140, 222, 255),
         )
-
         return img
 
     def _build_menu(self):
-        """Build the tray context menu."""
         import pystray
-
         items = [
             pystray.MenuItem(
-                "⚡ Agent Zero öffnen",
+                "Agent Zero öffnen",
                 lambda icon, item: self._safe_call(self.on_show),
                 default=True,
             ),
             pystray.MenuItem(
-                "+ Neues Gespräch",
+                "Neues Gespräch",
                 lambda icon, item: self._safe_call(self.on_new_chat),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "⚙ Einstellungen",
+                "Einstellungen",
                 lambda icon, item: self._safe_call(self.on_settings),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "✕ Beenden",
+                "Beenden",
                 lambda icon, item: self._quit(icon),
             ),
         ]
         return pystray.Menu(*items)
 
-    def _safe_call(self, callback: Optional[Callable]):
-        """Safely call a callback, catching exceptions."""
+    def _safe_call(self, callback):
         if callback:
             try:
                 callback()
@@ -95,63 +248,37 @@ class SystemTray:
                 logger.error(f"Tray callback error: {e}")
 
     def _quit(self, icon):
-        """Handle quit from tray menu."""
         icon.stop()
         self._safe_call(self.on_quit)
 
     def start(self) -> bool:
-        """Start the system tray icon in a background thread."""
         try:
             import pystray
-
-            icon_image = self._load_icon()
+            image = self._load_icon()
             menu = self._build_menu()
-
             self._icon = pystray.Icon(
-                name="agent-zero-companion",
-                icon=icon_image,
-                title="Agent Zero Companion",
-                menu=menu,
+                "agent-zero-companion",
+                image,
+                "Agent Zero Companion",
+                menu,
             )
-
             self._thread = threading.Thread(
                 target=self._icon.run,
                 daemon=True,
                 name="tray-thread",
             )
             self._thread.start()
-            logger.info("System tray started")
+            logger.info("System tray started (pystray backend)")
             return True
-
-        except ImportError:
-            logger.error("pystray not installed. Run: pip install pystray")
-            return False
         except Exception as e:
-            logger.error(f"Failed to start system tray: {e}")
+            logger.error(f"Failed to start pystray tray: {e}")
             return False
 
     def stop(self):
-        """Stop the system tray icon."""
         if self._icon:
             try:
                 self._icon.stop()
             except Exception:
                 pass
             self._icon = None
-        logger.info("System tray stopped")
-
-    def update_tooltip(self, text: str):
-        """Update the tray icon tooltip."""
-        if self._icon:
-            try:
-                self._icon.title = text
-            except Exception:
-                pass
-
-    def notify(self, title: str, message: str):
-        """Show a system notification (if supported by platform)."""
-        if self._icon:
-            try:
-                self._icon.notify(message, title)
-            except Exception as e:
-                logger.debug(f"Notification not supported: {e}")
+        logger.info("Pystray tray stopped")
