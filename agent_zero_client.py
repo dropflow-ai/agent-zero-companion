@@ -35,11 +35,14 @@ class AgentZeroClient:
         self.context_id: str = ""
         self._client: Optional[httpx.AsyncClient] = None
         self._authenticated = False
+        self._csrf_token: str = ""
 
     def _get_headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["X-API-KEY"] = self.api_key
+        if self._csrf_token:
+            headers["X-CSRF-Token"] = self._csrf_token
         return headers
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -50,12 +53,14 @@ class AgentZeroClient:
                 follow_redirects=False,  # Don't follow redirects - detect auth failures
             )
             self._authenticated = False
+            self._csrf_token = ""
         return self._client
 
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._authenticated = False
+            self._csrf_token = ""
 
     async def login(self) -> bool:
         """Authenticate with Agent Zero using username/password.
@@ -83,6 +88,8 @@ class AgentZeroClient:
                 if "/login" not in location:
                     self._authenticated = True
                     logger.info("Login successful")
+                    # Fetch CSRF token after successful login
+                    await self._fetch_csrf_token()
                     return True
                 else:
                     logger.error("Login failed: redirected back to login (bad credentials)")
@@ -95,6 +102,7 @@ class AgentZeroClient:
                     return False
                 self._authenticated = True
                 logger.info("Login successful (200)")
+                await self._fetch_csrf_token()
                 return True
             else:
                 logger.error(f"Login failed: HTTP {resp.status_code}")
@@ -103,6 +111,33 @@ class AgentZeroClient:
         except Exception as e:
             logger.error(f"Login request failed: {e}")
             return False
+
+    async def _fetch_csrf_token(self) -> bool:
+        """Fetch CSRF token from Agent Zero after login.
+
+        GET /api/csrf_token returns {ok, token, runtime_id}.
+        The token must be sent as X-CSRF-Token header in all subsequent requests.
+        """
+        try:
+            client = await self._get_client()
+            resp = await client.get(
+                f"{self.base_url}/api/csrf_token",
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok"):
+                    self._csrf_token = data.get("token", "")
+                    runtime_id = data.get("runtime_id", "")
+                    logger.info(f"CSRF token obtained (runtime: {runtime_id})")
+                    return True
+                else:
+                    logger.warning(f"CSRF token response not ok: {data}")
+            else:
+                logger.warning(f"CSRF token fetch failed: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"CSRF token fetch error: {e}")
+        return False
 
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have an active session. Login if needed."""

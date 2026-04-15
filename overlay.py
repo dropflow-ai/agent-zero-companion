@@ -176,6 +176,11 @@ class OverlayWindow:
         self._recording = False
         self._recorder = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._status_label = None
+        self._input_field = None
+        self._response_area = None
+        self._voice_btn = None
+        self._screenshot_btn = None
 
     def _build_window(self):
         """Build the PyQt6 window. Must be called from the Qt thread."""
