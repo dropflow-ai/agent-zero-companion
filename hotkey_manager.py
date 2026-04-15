@@ -269,4 +269,89 @@ class _PynputHotkeyListener:
             except Exception:
                 pass
             self._listener = None
-        logger.info("pynput hotkey listener stopped")
+
+
+# ---------------------------------------------------------------------------
+# Utility functions for settings dialog
+# ---------------------------------------------------------------------------
+
+def format_hotkey_display(hotkey_str: str) -> str:
+    """Convert internal hotkey format to human-readable display.
+
+    '<ctrl>+<space>' -> 'Ctrl + Space'
+    '<cmd>+<shift>+a' -> 'Cmd + Shift + A'
+    """
+    if not hotkey_str:
+        return ""
+    replacements = {
+        "<ctrl>": "Ctrl",
+        "<alt>": "Alt",
+        "<shift>": "Shift",
+        "<cmd>": "Cmd",
+        "<space>": "Space",
+        "<tab>": "Tab",
+        "<enter>": "Enter",
+        "<return>": "Return",
+        "<esc>": "Esc",
+        "<escape>": "Esc",
+        "<backspace>": "Backspace",
+        "<delete>": "Delete",
+        "<up>": "Up",
+        "<down>": "Down",
+        "<left>": "Left",
+        "<right>": "Right",
+        "<f1>": "F1", "<f2>": "F2", "<f3>": "F3", "<f4>": "F4",
+        "<f5>": "F5", "<f6>": "F6", "<f7>": "F7", "<f8>": "F8",
+        "<f9>": "F9", "<f10>": "F10", "<f11>": "F11", "<f12>": "F12",
+    }
+    parts = hotkey_str.split("+")
+    display_parts = []
+    for part in parts:
+        part = part.strip()
+        lower = part.lower()
+        if lower in replacements:
+            display_parts.append(replacements[lower])
+        else:
+            display_parts.append(part.upper() if len(part) == 1 else part)
+    return " + ".join(display_parts)
+
+
+def parse_hotkey_from_display(display_str: str) -> str:
+    """Convert human-readable display back to internal hotkey format.
+
+    'Ctrl + Space' -> '<ctrl>+<space>'
+    'Cmd + Shift + A' -> '<cmd>+<shift>+a'
+    """
+    if not display_str:
+        return ""
+    replacements = {
+        "ctrl": "<ctrl>",
+        "alt": "<alt>",
+        "shift": "<shift>",
+        "cmd": "<cmd>",
+        "space": "<space>",
+        "tab": "<tab>",
+        "enter": "<enter>",
+        "return": "<return>",
+        "esc": "<esc>",
+        "escape": "<escape>",
+        "backspace": "<backspace>",
+        "delete": "<delete>",
+        "up": "<up>",
+        "down": "<down>",
+        "left": "<left>",
+        "right": "<right>",
+        "f1": "<f1>", "f2": "<f2>", "f3": "<f3>", "f4": "<f4>",
+        "f5": "<f5>", "f6": "<f6>", "f7": "<f7>", "f8": "<f8>",
+        "f9": "<f9>", "f10": "<f10>", "f11": "<f11>", "f12": "<f12>",
+    }
+    parts = display_str.split("+")
+    internal_parts = []
+    for part in parts:
+        part = part.strip()
+        lower = part.lower()
+        if lower in replacements:
+            internal_parts.append(replacements[lower])
+        else:
+            internal_parts.append(part.lower())
+    return "+".join(internal_parts)
