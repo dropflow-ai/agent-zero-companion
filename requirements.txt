@@ -1,0 +1,40 @@
+# Agent Zero Companion - Dependencies
+# Cross-platform desktop companion for Agent Zero
+
+# UI Framework
+PyQt6>=6.6.0
+
+# System Tray
+pystray>=0.19.5
+Pillow>=10.0.0
+
+# Global Hotkeys (cross-platform)
+pynput>=1.7.6
+
+# Screen Capture
+mss>=9.0.1
+
+# HTTP Client
+httpx>=0.27.0
+websockets>=12.0
+
+# Voice Input (STT) - optional, install separately if needed
+# faster-whisper>=1.0.0
+# torch>=2.0.0  # Required by faster-whisper
+
+# Voice Output (TTS)
+edge-tts>=6.1.9
+
+# Audio playback
+pygame>=2.5.0
+
+# Audio recording
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Configuration
+# (uses stdlib json + pathlib)
+
+# Packaging (optional, for building executables)
+# pyinstaller>=6.0.0
