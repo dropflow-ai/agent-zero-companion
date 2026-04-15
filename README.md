@@ -14,10 +14,11 @@ A cross-platform desktop AI assistant that connects to your [Agent Zero](https:/
 |---|---|
 | 🖱️ **Global Hotkey** | Configurable hotkey (default: `Ctrl+Space`) opens the overlay anywhere |
 | 🖼️ **Floating Overlay** | Minimal, frameless overlay appears near your cursor |
-| 📸 **Screenshot** | Attach a screenshot of your screen to any message |
-| 🎤 **Voice Input** | Local Whisper STT — no cloud required |
+| 📸 **Auto-Screenshot** | Automatically captures your screen when overlay opens |
+| 🎤 **Voice Input** | Speech-to-text via Google Speech API (free, online) |
 | 🔊 **Voice Output** | Microsoft edge-tts — free, high-quality TTS |
 | 🔗 **Local or Remote** | Connect to localhost or a remote VPS |
+| 🔐 **Session Auth + CSRF** | Full authentication with Agent Zero (login + CSRF token) |
 | 💬 **Context Memory** | Conversation context persists across hotkey activations |
 | 🗂️ **System Tray** | Lives in your system tray, always ready |
 | ⚙️ **Settings Dialog** | Full GUI settings — no config file editing needed |
@@ -26,84 +27,66 @@ A cross-platform desktop AI assistant that connects to your [Agent Zero](https:/
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### macOS
 
 ```bash
-# Clone or download the project
+# Clone the project
+git clone https://github.com/dropflow-ai/agent-zero-companion.git
 cd agent-zero-companion
 
-# Install Python dependencies
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+pip install pyobjc-framework-Cocoa pyobjc-framework-Quartz SpeechRecognition
+
+# Generate the app icon
+python3 create_icon.py
+
+# First run — opens settings dialog
+python3 main.py --settings
+```
+
+### Windows / Linux
+
+```bash
+# Clone the project
+git clone https://github.com/dropflow-ai/agent-zero-companion.git
+cd agent-zero-companion
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux
+venv\Scripts\activate     # Windows
+
+# Install dependencies
 pip install -r requirements.txt
 
 # Generate the app icon
 python create_icon.py
-```
 
-### 2. Run
-
-```bash
-# First run — opens settings dialog automatically
-python main.py
-
-# Or explicitly open settings
+# First run
 python main.py --settings
-
-# Debug mode (shows console output)
-python main.py --debug
 ```
-
-### 3. Configure
-
-On first launch, the settings dialog opens automatically. Configure:
-
-- **Agent Zero URL**: `http://localhost:80` (local) or `https://your-vps.com` (remote)
-- **API Key**: Optional, if your Agent Zero instance requires authentication
-- **Hotkey**: Click the field and press your desired key combination
-- **Voice**: Enable/disable STT and TTS, choose Whisper model and TTS voice
 
 ---
 
-## 📦 Requirements
+## ⚙️ Configuration
 
-### System Requirements
+On first run, the settings dialog opens automatically. Configure:
 
-| Platform | Requirements |
+| Setting | Description |
 |---|---|
-| **Windows** | Windows 10/11, Python 3.11+ |
-| **macOS** | macOS 12+, Python 3.11+ |
-| **Linux** | X11 or Wayland, Python 3.11+, `libxcb` |
+| **Agent Zero URL** | URL of your Agent Zero instance (e.g., `http://72.62.45.162:50080`) |
+| **Benutzername** | Your Agent Zero login username |
+| **Passwort** | Your Agent Zero login password |
+| **Hotkey** | Global hotkey combination (default: `Ctrl+Space`) |
+| **Auto-Screenshot** | Automatically capture screen when overlay opens (default: on) |
+| **Sprache** | Language for voice input (default: `de`) |
 
-### Python Dependencies
-
-```
-PyQt6>=6.6.0          # UI framework
-pystray>=0.19.5        # System tray
-pynput>=1.7.6          # Global hotkeys
-mss>=9.0.1             # Screen capture
-Pillow>=10.0.0         # Image processing
-httpx>=0.27.0          # HTTP client (async)
-faster-whisper>=1.0.0  # Local STT
-edge-tts>=6.1.9        # Free TTS
-sounddevice>=0.4.6     # Audio recording
-soundfile>=0.12.1      # Audio file I/O
-numpy>=1.24.0          # Audio processing
-```
-
-### Linux Additional Dependencies
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install -y \
-    libxcb-xinerama0 \
-    libxcb-cursor0 \
-    libportaudio2 \
-    python3-pyaudio
-
-# Fedora/RHEL
-sudo dnf install -y \
-    xcb-util-cursor \
-    portaudio
-```
+Settings are stored in `~/.agent-zero-companion/config.json`.
 
 ---
 
@@ -111,182 +94,142 @@ sudo dnf install -y \
 
 ```
 agent-zero-companion/
-├── main.py               # Entry point, orchestrates all components
-├── config.py             # Configuration management (JSON persistence)
-├── overlay.py            # PyQt6 floating overlay window
-├── tray.py               # System tray icon (pystray)
-├── hotkey_manager.py     # Global hotkey registration (pynput)
-├── agent_zero_client.py  # HTTP client for Agent Zero API
-├── screen_capture.py     # Screenshot capture (mss)
-├── voice_input.py        # Whisper STT recording
-├── voice_output.py       # edge-tts TTS playback
-├── settings_dialog.py    # PyQt6 settings dialog
-├── create_icon.py        # Icon generator (Pillow)
-├── build.py              # PyInstaller build script
-├── requirements.txt      # Python dependencies
-└── assets/
-    ├── icon.png          # App icon (256x256)
-    ├── icon.ico          # Windows icon
-    └── icon_mac.png      # macOS icon source
-```
-
-### Component Flow
-
-```
-[Global Hotkey]
-      │
-      ▼
-[Overlay Window] ──── user types / speaks ────▶ [Agent Zero Client]
-      │                                                  │
-      │◀──────────── response text ─────────────────────┘
-      │
-      ├──▶ [TTS Engine]  (speaks response)
-      └──▶ [Tray Notification]
+├── main.py              # Entry point, orchestrates all components
+├── config.py            # JSON configuration (~/.agent-zero-companion/config.json)
+├── overlay.py           # PyQt6 Floating Overlay UI (frameless, near cursor)
+├── tray.py              # System Tray Icon (QSystemTrayIcon on macOS, pystray on Linux/Windows)
+├── hotkey_manager.py    # Global Hotkeys (PyObjC/NSEvent on macOS, pynput on Linux/Windows)
+├── agent_zero_client.py # HTTP Client for Agent Zero API (Session Auth + CSRF)
+├── screen_capture.py    # Screenshot capture (mss, all monitors)
+├── voice_input.py       # Multi-backend STT (SpeechRecognition/Google API, optional faster-whisper)
+├── voice_output.py      # edge-tts TTS (free, Microsoft)
+├── settings_dialog.py   # PyQt6 Settings Dialog (4 tabs, incl. login fields)
+├── create_icon.py       # Icon generator (Pillow)
+├── build.py             # PyInstaller build script
+├── start.command        # macOS double-click launcher (runs in background)
+└── requirements.txt     # Python dependencies
 ```
 
 ---
 
-## ⚙️ Configuration
+## 🍎 macOS-Specific Notes
 
-Settings are stored in `~/.agent-zero-companion/config.json`.
+### Platform-Specific Implementations
 
-| Setting | Default | Description |
+| Component | macOS | Windows/Linux |
 |---|---|---|
-| `agent_zero_url` | `http://localhost:80` | Agent Zero server URL |
-| `api_key` | `""` | Optional API key |
-| `hotkey` | `<ctrl>+<space>` | Global hotkey combination |
-| `keep_context` | `true` | Persist conversation context |
-| `auto_screenshot` | `false` | Auto-attach screenshot on open |
-| `voice_input_enabled` | `true` | Enable Whisper STT |
-| `whisper_model` | `base` | Whisper model size |
-| `language` | `de` | STT language |
-| `voice_output_enabled` | `true` | Enable TTS |
-| `voice_output_voice` | `de-DE-KatjaNeural` | TTS voice |
-| `overlay_width` | `480` | Overlay width in pixels |
-| `overlay_opacity` | `0.95` | Overlay transparency |
+| **Hotkeys** | PyObjC NSEvent | pynput |
+| **Tray Icon** | QSystemTrayIcon | pystray |
+| **Voice Input** | SpeechRecognition (Google API) | SpeechRecognition / faster-whisper |
 
-### Hotkey Format
+### Why PyObjC instead of pynput on macOS?
 
-Hotkeys use pynput format:
-- `<ctrl>+<space>` — Ctrl + Space
-- `<alt>+<f1>` — Alt + F1
-- `<ctrl>+<shift>+a` — Ctrl + Shift + A
-- `<cmd>+<space>` — Cmd + Space (macOS)
+`pynput` runs a keyboard listener in a background thread using Cocoa/AppKit internally. This conflicts with PyQt6's main thread, causing a `SIGTRAP` crash when the hotkey is pressed. PyObjC's `NSEvent.addGlobalMonitorForEventsMatchingMask` integrates directly with the Qt/AppKit event loop — no background thread conflicts.
+
+### Why QSystemTrayIcon instead of pystray on macOS?
+
+`pystray` calls `NSApplication.run()` on a background thread, which conflicts with PyQt6's `QApplication` that also manages the NSApplication instance. Using PyQt6's built-in `QSystemTrayIcon` avoids this thread conflict entirely.
+
+### Accessibility Permissions
+
+Global hotkeys on macOS require **Accessibility** permissions:
+1. Go to **System Settings → Privacy & Security → Accessibility**
+2. Add **Terminal** (or your IDE) to the allowed list
+3. Restart the application
 
 ---
 
-## 🔨 Building Executables
+## 📸 Screenshot Feature
 
-### Prerequisites
+When you press the hotkey to open the overlay:
+1. A screenshot is **automatically captured** (before the overlay appears)
+2. You see the status: `📷 Screenshot angehängt`
+3. Type your question (e.g., "Was siehst du auf meinem Bildschirm?")
+4. The screenshot is sent as a base64 attachment with your message
+5. Agent Zero analyzes the image and responds
+
+You can toggle auto-screenshot off via the 📷 button in the overlay.
+
+---
+
+## 🎤 Voice Input
+
+Press the 🎤 button in the overlay to record voice input:
+- **Default backend**: Google Speech API (free, online, no API key needed)
+- **Optional**: Install `faster-whisper` for offline local transcription
+- Language is configurable in settings (default: German)
+
+---
+
+## 📦 Building a Standalone App
+
+### macOS (.app Bundle)
 
 ```bash
+cd agent-zero-companion
+source venv/bin/activate
 pip install pyinstaller
+python3 build.py
 ```
 
-### Build
+The `.app` bundle will be in `dist/agent-zero-companion.app`. Drag it to `/Applications/`.
 
+> **Note:** macOS may block the app from an unverified developer. Go to **System Settings → Privacy & Security** and click **"Open Anyway"**.
+
+### Running Without Terminal
+
+**Option 1: Double-click launcher**
 ```bash
-# Build for current platform (directory output)
-python build.py
-
-# Single executable file
-python build.py --onefile
-
-# Debug build (with console window)
-python build.py --debug
+chmod +x start.command
+# Then double-click start.command in Finder
 ```
 
-### Output
-
-| Platform | Output |
-|---|---|
-| Windows | `dist/agent-zero-companion/agent-zero-companion.exe` |
-| macOS | `dist/agent-zero-companion/agent-zero-companion` |
-| Linux | `dist/agent-zero-companion/agent-zero-companion` |
+**Option 2: Built .app from Applications folder**
 
 ---
 
 ## 🔗 Connecting to Agent Zero
 
-### Local Instance
+1. Open settings (tray icon → Einstellungen, or `python3 main.py --settings`)
+2. Enter your Agent Zero URL (e.g., `http://72.62.45.162:50080`)
+3. Enter your login credentials (same as browser login)
+4. Click **"Verbindung testen"** to verify
 
-```
-URL: http://localhost:80
-```
-
-### Remote VPS (Hostinger / any VPS)
-
-```
-URL: https://your-vps-domain.com
-     or
-URL: http://your-vps-ip:80
-```
-
-If your Agent Zero instance is behind a reverse proxy with HTTPS, use `https://`.
-
-### API Authentication
-
-If your Agent Zero instance has API key authentication enabled, enter the key in the settings dialog. It will be sent as `Authorization: Bearer <key>` header.
+The app handles:
+- Session-based authentication (login with username/password)
+- CSRF token management (automatic)
+- Session renewal on expiry (automatic)
+- Context persistence across messages
 
 ---
 
-## 🎤 Voice Features
+## 🛠️ Troubleshooting
 
-### Speech-to-Text (Whisper)
-
-Local Whisper runs entirely on your machine — no data sent to cloud.
-
-| Model | Size | Speed | Accuracy |
-|---|---|---|---|
-| `tiny` | 75 MB | Fastest | Basic |
-| `base` | 145 MB | Fast | Good |
-| `small` | 466 MB | Medium | Better |
-| `medium` | 1.5 GB | Slow | Best |
-
-Recommended: `base` for everyday use, `small` for better accuracy.
-
-### Text-to-Speech (edge-tts)
-
-Free Microsoft TTS via edge-tts. German voices:
-- `de-DE-KatjaNeural` — Female, natural
-- `de-DE-ConradNeural` — Male, natural
-- `de-AT-IngridNeural` — Austrian female
-- `de-CH-LeniNeural` — Swiss female
+| Problem | Solution |
+|---|---|
+| `zsh: command not found: python` | Use `python3` on macOS |
+| `zsh: trace trap` on hotkey | Install PyObjC: `pip install pyobjc-framework-Cocoa pyobjc-framework-Quartz` |
+| Settings won't open | `git pull` and clear cache: `find . -name '*.pyc' -delete` |
+| 403 Forbidden on API calls | Update app (`git pull`) — CSRF token support was added |
+| Voice not recognized | `pip install SpeechRecognition` — needs internet connection |
+| Screenshot not working | `pip install mss` |
+| App blocked by macOS | System Settings → Privacy & Security → Open Anyway |
 
 ---
 
-## 🐛 Troubleshooting
+## 📋 Tech Stack
 
-### Hotkey not working
-- **Linux**: May need to run with elevated permissions or install `python3-xlib`
-- **macOS**: Grant Accessibility permissions in System Preferences → Security & Privacy
-- **Windows**: Run as Administrator if hotkey conflicts with system shortcuts
-
-### System tray not showing
-- **Linux**: Install `libappindicator3-1` or use a compatible desktop environment
-- Try: `sudo apt-get install gir1.2-appindicator3-0.1`
-
-### Voice input not working
-- Check microphone permissions
-- Install PortAudio: `sudo apt-get install libportaudio2` (Linux)
-- Try a smaller Whisper model (`tiny`) if memory is limited
-
-### Connection refused
-- Verify Agent Zero is running and accessible
-- Check firewall rules for the port
-- Try `curl http://your-url/api/health` to test connectivity
+- **Python 3.11+**
+- **PyQt6** — UI framework
+- **httpx** — Async HTTP client
+- **mss** — Cross-platform screenshot
+- **SpeechRecognition** — Speech-to-text (Google API)
+- **edge-tts** — Text-to-speech (Microsoft)
+- **PyObjC** — macOS native integration (hotkeys, tray)
+- **PyInstaller** — Standalone app building
 
 ---
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## 🙏 Credits
-
-- Inspired by [zippy-windows](https://github.com/Arnie936/zippy-windows) by Arnie936
-- Built for [Agent Zero](https://github.com/frdel/agent-zero) by frdel
-- TTS powered by [edge-tts](https://github.com/rany2/edge-tts)
-- STT powered by [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+MIT License
